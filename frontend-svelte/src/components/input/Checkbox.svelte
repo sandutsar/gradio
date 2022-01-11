@@ -4,21 +4,42 @@
 
 <div class="input-checkbox flex flex-wrap gap-2" {theme}>
     <div
-    class="checkbox-item py-2 px-3 font-semibold rounded cursor-pointer flex items-center gap-2"
-    class:selected={value}
-    on:click={() => setValue(value)}
+        class="checkbox-item py-2 px-3 font-semibold rounded cursor-pointer flex items-center gap-2"
+        class:selected={value}
+        on:click={() => setValue(!value)}
     >
         <div class="checkbox w-4 h-4 bg-white flex items-center justify-center">
             <svg class="check hidden h-3 w-4" viewBox="-10 -10 20 20">
-                <line x1="-7.5" y1="0" x2="-2.5" y2="5"></line>
-                <line x1="-2.5" y1="5" x2="7.5" y2="-7.5"></line>
+                <line
+                    x1="-7.5"
+                    y1="0"
+                    x2="-2.5"
+                    y2="5"
+                    stroke="white"
+                    stroke-width="4"
+                    stroke-linecap="round"
+                />
+                <line
+                    x1="-2.5"
+                    y1="5"
+                    x2="7.5"
+                    y2="-7.5"
+                    stroke="white"
+                    stroke-width="4"
+                    stroke-linecap="round"
+                />
             </svg>
         </div>
     </div>
 </div>
 
 <style lang="postcss">
-    .input-checkbox {
+    .selected .checkbox {
+        .check {
+            @apply block;
+        }
+    }
+    .input-checkbox[theme="default"] {
         .checkbox-item {
             @apply bg-white dark:bg-gray-800 shadow transition hover:shadow-md;
         }

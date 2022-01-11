@@ -1,16 +1,25 @@
 <script>
     export let value, setValue, theme;
     export let choices;
+    const selectChoice = (choice) => {
+        if (value.includes(choice)) {
+            value.splice(value.indexOf(choice), 1)
+            setValue(value)
+        } else {
+            value.push(choice)
+            setValue(value)
+        }
+    }
 </script>
 
-<div className="input-checkbox-group" {theme}>
+<div class="input-checkbox-group flex flex-wrap gap-2" {theme}>
     {#each choices as choice, i}
-          <!-- <div
+          <div
             class="checkbox-item py-2 px-3 font-semibold rounded cursor-pointer flex items-center gap-2"
-            class:selected={value === choice}
+            class:selected={value.includes(choice)}
             key={i}
-            on:click={() => setValue(choice)}
-        > -->
+            on:click={() => selectChoice(choice)}
+        >
             <div class="checkbox w-4 h-4 bg-white flex items-center justify-center">
               <svg class="check hidden h-3 w-4" viewBox="-10 -10 20 20">
                 <line x1="-7.5" y1="0" x2="-2.5" y2="5"></line>
@@ -18,12 +27,12 @@
               </svg>
             </div>
           {choice}
-        <!-- </div> -->
+        </div>
     {/each}
 </div>
 
 <style lang="postcss">
-    .input-checkbox-group {
+    .input-checkbox-group[theme="default"] {
         .checkbox-item {
             @apply bg-white dark:bg-gray-800 shadow transition hover:shadow-md;
         }
