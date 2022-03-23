@@ -14,8 +14,10 @@ else
   if [[ $REPLY =~ ^[Yy]$ ]]
   then
     echo -n $new_version > gradio/version.txt
+    rm -rf gradio/templates/frontend
     cd ui
-    npm run build
+    pnpm i
+    pnpm build
     cd ..
     aws s3 cp gradio/templates/frontend s3://gradio/$new_version/ --recursive  # requires aws cli (contact maintainers for credentials)
   fi
@@ -25,6 +27,5 @@ else
   python3 -m twine upload dist/*
   git add -A
   git commit -m "updated PyPi version to $new_version"
-  git push origin master
 fi
 

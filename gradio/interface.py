@@ -6,38 +6,35 @@ including various methods for constructing an interface and then launching it.
 from __future__ import annotations
 
 import copy
-import getpass
 import os
 import random
 import re
-import sys
 import time
 import warnings
 import weakref
-import webbrowser
-from typing import TYPE_CHECKING, Any, Callable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from markdown_it import MarkdownIt
 from mdit_py_plugins.footnote import footnote_plugin
 
-from gradio import networking  # type: ignore
-from gradio import encryptor, interpretation, queueing, strings, utils
+from gradio import interpretation, utils
 from gradio.external import load_from_pipeline, load_interface  # type: ignore
 from gradio.flagging import CSVLogger, FlaggingCallback  # type: ignore
 from gradio.inputs import InputComponent
 from gradio.inputs import State as i_State  # type: ignore
 from gradio.inputs import get_input_instance
+from gradio.launchable import Launchable
 from gradio.outputs import OutputComponent
 from gradio.outputs import State as o_State  # type: ignore
 from gradio.outputs import get_output_instance
-from gradio.process_examples import cache_interface_examples
+from gradio.process_examples import load_from_cache, process_example
+from gradio.routes import PredictBody
 
 if TYPE_CHECKING:  # Only import for type checking (is False at runtime).
-    import flask
     import transformers
 
 
-class Interface:
+class Interface(Launchable):
     """
     Gradio interfaces are created by constructing a `Interface` object
     with a locally-defined function, or with `Interface.load()` with the path
@@ -123,7 +120,7 @@ class Interface:
         css: Optional[str] = None,
         height=None,
         width=None,
-        allow_screenshot: bool = True,
+        allow_screenshot: bool = False,
         allow_flagging: Optional[str] = None,
         flagging_options: List[str] = None,
         encrypt=None,
@@ -135,7 +132,7 @@ class Interface:
         enable_queue=None,
         api_mode=None,
         flagging_callback: FlaggingCallback = CSVLogger(),
-    ):
+    ):  # TODO: (faruk) Let's remove depreceated parameters in the version 3.0.0
         """
         Parameters:
         fn (Union[Callable, List[Callable]]): the function to wrap an interface around.
@@ -155,7 +152,7 @@ class Interface:
         thumbnail (str): path to image or src to use as display picture for models listed in gradio.app/hub
         theme (str): Theme to use - one of "default", "huggingface", "seafoam", "grass", "peach". Add "dark-" prefix, e.g. "dark-peach" for dark theme (or just "dark" for the default dark theme).
         css (str): custom css or path to custom css file to use with interface.
-        allow_screenshot (bool): if False, users will not see a button to take a screenshot of the interface.
+        allow_screenshot (bool): DEPRECATED if False, users will not see a button to take a screenshot of the interface.
         allow_flagging (str): one of "never", "auto", or "manual". If "never" or "auto", users will not see a button to flag an input and output. If "manual", users will see a button to flag. If "auto", every prediction will be automatically flagged. If "manual", samples are flagged when the user clicks flag button. Can be set with environmental variable GRADIO_ALLOW_FLAGGING.
         flagging_options (List[str]): if provided, allows user to select from the list of options when flagging. Only applies if allow_flagging is "manual".
         encrypt (bool): DEPRECATED. If True, flagged data will be encrypted by key provided by creator at launch
@@ -178,6 +175,7 @@ class Interface:
         if repeat_outputs_per_model:
             self.output_components *= len(fn)
 
+        self.stateful = False
         if sum(isinstance(i, i_State) for i in self.input_components) > 1:
             raise ValueError("Only one input component can be State.")
         if sum(isinstance(o, o_State) for o in self.output_components) > 1:
@@ -189,10 +187,24 @@ class Interface:
             state_param_index = [
                 isinstance(i, i_State) for i in self.input_components
             ].index(True)
+            self.stateful = True
+            self.state_param_index = state_param_index
             state: i_State = self.input_components[state_param_index]
             if state.default is None:
                 default = utils.get_default_args(fn[0])[state_param_index]
                 state.default = default
+            self.state_default = state.default
+
+            if sum(isinstance(i, o_State) for i in self.output_components) == 1:
+                state_return_index = [
+                    isinstance(i, o_State) for i in self.output_components
+                ].index(True)
+                self.state_return_index = state_return_index
+            else:
+                raise ValueError(
+                    "For a stateful interface, there must be exactly one State"
+                    " input component and one State output component."
+                )
 
         if (
             interpretation is None
@@ -215,6 +227,11 @@ class Interface:
         if verbose:
             warnings.warn(
                 "The `verbose` parameter in the `Interface`"
+                "is deprecated and has no effect."
+            )
+        if allow_screenshot:
+            warnings.warn(
+                "The `allow_screenshot` parameter in the `Interface`"
                 "is deprecated and has no effect."
             )
 
@@ -540,6 +557,47 @@ class Interface:
         else:
             return predictions
 
+    def process_api(self, data: PredictBody, username: str = None) -> Dict[str, Any]:
+        flag_index = None
+        if data.example_id is not None:
+            if self.cache_examples:
+                prediction = load_from_cache(self, data.example_id)
+                durations = None
+            else:
+                prediction, durations = process_example(self, data.example_id)
+        else:
+            raw_input = data.data
+            if self.stateful:
+                state = data.state
+                raw_input[self.state_param_index] = state
+            prediction, durations = self.process(raw_input)
+            if self.allow_flagging == "auto":
+                flag_index = self.flagging_callback.flag(
+                    self,
+                    raw_input,
+                    prediction,
+                    flag_option="" if self.flagging_options else None,
+                    username=username,
+                )
+        if self.stateful:
+            updated_state = prediction[self.state_return_index]
+            prediction[self.state_return_index] = None
+        else:
+            updated_state = None
+
+        durations = durations
+        avg_durations = self.config.get("avg_durations")
+        response = {
+            "data": prediction,
+            "flag_index": flag_index,
+            "updated_state": updated_state,
+        }
+        if durations is not None:
+            response["durations"] = durations
+        if avg_durations is not None:
+            response["avg_durations"] = avg_durations
+        return response
+
     def process(self, raw_input: List[Any]) -> Tuple[List[Any], List[float]]:
         """
         First preprocesses the input, then runs prediction using
@@ -579,19 +637,6 @@ class Interface:
     def interpret(self, raw_input: List[Any]) -> List[Any]:
         return interpretation.run_interpret(self, raw_input)
 
-    def block_thread(
-        self,
-    ) -> None:
-        """Block main thread until interrupted by user."""
-        try:
-            while True:
-                time.sleep(0.1)
-        except (KeyboardInterrupt, OSError):
-            print("Keyboard interruption in main thread... closing server.")
-            self.server.close()
-            if self.enable_queue:
-                queueing.close()
-
     def test_launch(self) -> None:
         for predict_fn in self.predict:
             print("Test launch: {}()...".format(predict_fn.__name__), end=" ")
@@ -607,216 +652,10 @@ class Interface:
                 print("PASSED")
                 continue
 
-    def launch(
-        self,
-        inline: bool = None,
-        inbrowser: bool = None,
-        share: bool = False,
-        debug: bool = False,
-        auth: Optional[Callable | Tuple[str, str] | List[Tuple[str, str]]] = None,
-        auth_message: Optional[str] = None,
-        private_endpoint: Optional[str] = None,
-        prevent_thread_lock: bool = False,
-        show_error: bool = True,
-        server_name: Optional[str] = None,
-        server_port: Optional[int] = None,
-        show_tips: bool = False,
-        enable_queue: bool = False,
-        height: int = 500,
-        width: int = 900,
-        encrypt: bool = False,
-        cache_examples: bool = False,
-        favicon_path: Optional[str] = None,
-        ssl_keyfile: Optional[str] = None,
-        ssl_certfile: Optional[str] = None,
-        ssl_keyfile_password: Optional[str] = None,
-    ) -> Tuple[flask.Flask, str, str]:
-        """
-        Launches the webserver that serves the UI for the interface.
-        Parameters:
-        inline (bool): whether to display in the interface inline on python notebooks.
-        inbrowser (bool): whether to automatically launch the interface in a new tab on the default browser.
-        share (bool): whether to create a publicly shareable link from your computer for the interface.
-        debug (bool): if True, and the interface was launched from Google Colab, prints the errors in the cell output.
-        auth (Callable, Union[Tuple[str, str], List[Tuple[str, str]]]): If provided, username and password (or list of username-password tuples) required to access interface. Can also provide function that takes username and password and returns True if valid login.
-        auth_message (str): If provided, HTML message provided on login page.
-        private_endpoint (str): If provided, the public URL of the interface will be this endpoint (should generally be unchanged).
-        prevent_thread_lock (bool): If True, the interface will block the main thread while the server is running.
-        show_error (bool): If True, any errors in the interface will be printed in the browser console log
-        server_port (int): will start gradio app on this port (if available). Can be set by environment variable GRADIO_SERVER_PORT.
-        server_name (str): to make app accessible on local network, set this to "0.0.0.0". Can be set by environment variable GRADIO_SERVER_NAME.
-        show_tips (bool): if True, will occasionally show tips about new Gradio features
-        enable_queue (bool): if True, inference requests will be served through a queue instead of with parallel threads. Required for longer inference times (> 1min) to prevent timeout.
-        width (int): The width in pixels of the iframe element containing the interface (used if inline=True)
-        height (int): The height in pixels of the iframe element containing the interface (used if inline=True)
-        encrypt (bool): If True, flagged data will be encrypted by key provided by creator at launch
-        cache_examples (bool): If True, examples outputs will be processed and cached in a folder, and will be used if a user uses an example input.
-        favicon_path (str): If a path to a file (.png, .gif, or .ico) is provided, it will be used as the favicon for the web page.
-        ssl_keyfile (str): If a path to a file is provided, will use this as the private key file to create a local server running on https.
-        ssl_certfile (str): If a path to a file is provided, will use this as the signed certificate for https. Needs to be provided if ssl_keyfile is provided.
-        ssl_keyfile_password (str): If a password is provided, will use this with the ssl certificate for https.
-        Returns:
-        app (flask.Flask): Flask app object
-        path_to_local_server (str): Locally accessible link
-        share_url (str): Publicly accessible link (if share=True)
-        """
-        self.config = self.get_config_file()
-        self.cache_examples = cache_examples
-        if (
-            auth
-            and not callable(auth)
-            and not isinstance(auth[0], tuple)
-            and not isinstance(auth[0], list)
-        ):
-            auth = [auth]
-        self.auth = auth
-        self.auth_message = auth_message
-        self.show_tips = show_tips
-        self.show_error = show_error
-        self.height = self.height or height
-        self.width = self.width or width
-        self.favicon_path = favicon_path
-
-        if self.encrypt is None:
-            self.encrypt = encrypt
-        if self.encrypt:
-            self.encryption_key = encryptor.get_key(
-                getpass.getpass("Enter key for encryption: ")
-            )
-
-        if self.enable_queue is None:
-            self.enable_queue = enable_queue
+    def launch(self, **args):
         if self.allow_flagging != "never":
             self.flagging_callback.setup(self.flagging_dir)
-
-        config = self.get_config_file()
-        self.config = config
-
-        if self.cache_examples:
-            cache_interface_examples(self)
-
-        server_port, path_to_local_server, app, server = networking.start_server(
-            self,
-            server_name,
-            server_port,
-            ssl_keyfile,
-            ssl_certfile,
-            ssl_keyfile_password,
-        )
-
-        self.local_url = path_to_local_server
-        self.server_port = server_port
-        self.status = "RUNNING"
-        self.server_app = app
-        self.server = server
-
-        utils.launch_counter()
-
-        # If running in a colab or not able to access localhost,
-        # automatically create a shareable link.
-        is_colab = utils.colab_check()
-        if is_colab or not (networking.url_ok(path_to_local_server)):
-            share = True
-            if is_colab:
-                if debug:
-                    print(strings.en["COLAB_DEBUG_TRUE"])
-                else:
-                    print(strings.en["COLAB_DEBUG_FALSE"])
-        else:
-            print(strings.en["RUNNING_LOCALLY"].format(path_to_local_server))
-        if is_colab and self.requires_permissions:
-            print(strings.en["MEDIA_PERMISSIONS_IN_COLAB"])
-
-        if private_endpoint is not None:
-            share = True
-
-        if share:
-            try:
-                share_url = networking.setup_tunnel(server_port, private_endpoint)
-                self.share_url = share_url
-                print(strings.en["SHARE_LINK_DISPLAY"].format(share_url))
-                if private_endpoint:
-                    print(strings.en["PRIVATE_LINK_MESSAGE"])
-                else:
-                    print(strings.en["SHARE_LINK_MESSAGE"])
-            except RuntimeError:
-                if self.analytics_enabled:
-                    utils.error_analytics(self.ip_address, "Not able to set up tunnel")
-                share_url = None
-                share = False
-                print(strings.en["COULD_NOT_GET_SHARE_LINK"])
-        else:
-            print(strings.en["PUBLIC_SHARE_TRUE"])
-            share_url = None
-
-        self.share = share
-
-        if inbrowser:
-            link = share_url if share else path_to_local_server
-            webbrowser.open(link)
-
-        # Check if running in a Python notebook in which case, display inline
-        if inline is None:
-            inline = utils.ipython_check() and (auth is None)
-        if inline:
-            if auth is not None:
-                print(
-                    "Warning: authentication is not supported inline. Please"
-                    "click the link to access the interface in a new tab."
-                )
-            try:
-                from IPython.display import IFrame, display  # type: ignore
-
-                if share:
-                    while not networking.url_ok(share_url):
-                        time.sleep(1)
-                    display(IFrame(share_url, width=self.width, height=self.height))
-                else:
-                    display(
-                        IFrame(
-                            path_to_local_server, width=self.width, height=self.height
-                        )
-                    )
-            except ImportError:
-                pass
-
-        data = {
-            "launch_method": "browser" if inbrowser else "inline",
-            "is_google_colab": is_colab,
-            "is_sharing_on": share,
-            "share_url": share_url,
-            "ip_address": self.ip_address,
-            "enable_queue": self.enable_queue,
-            "show_tips": self.show_tips,
-            "api_mode": self.api_mode,
-            "server_name": server_name,
-            "server_port": server_port,
-        }
-        if self.analytics_enabled:
-            utils.launch_analytics(data)
-
-        utils.show_tip(self)
-
-        # Block main thread if debug==True
-        if debug or int(os.getenv("GRADIO_DEBUG", 0)) == 1:
-            self.block_thread()
-        # Block main thread if running in a script to stop script from exiting
-        is_in_interactive_mode = bool(getattr(sys, "ps1", sys.flags.interactive))
-        if not prevent_thread_lock and not is_in_interactive_mode:
-            self.block_thread()
-
-        return app, path_to_local_server, share_url
-
-    def close(self, verbose: bool = True) -> None:
-        """
-        Closes the Interface that was launched and frees the port.
-        """
-        try:
-            self.server.close()
-            if verbose:
-                print("Closing server running on port: {}".format(self.server_port))
-        except (AttributeError, OSError):  # can't close if not running
-            pass
+        return super().launch(**args)
 
     def integrate(self, comet_ml=None, wandb=None, mlflow=None) -> None:
         """

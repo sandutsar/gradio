@@ -1,4 +1,5 @@
 import App from "./App.svelte";
+import Blocks from "./Blocks.svelte";
 import Login from "./Login.svelte";
 import { fn } from "./api";
 
@@ -36,6 +37,7 @@ interface Config {
 	output_components: Array<Component>;
 	layout: string;
 	live: boolean;
+	mode: "blocks" | "interface" | undefined;
 	queue: boolean;
 	root: string;
 	show_input: boolean;
@@ -49,6 +51,7 @@ interface Config {
 	space?: string;
 	detail: string;
 	dark: boolean;
+	auth_required: boolean;
 }
 
 window.launchGradio = (config: Config, element_query: string) => {
@@ -75,14 +78,14 @@ window.launchGradio = (config: Config, element_query: string) => {
 		style.innerHTML = config.css;
 		document.head.appendChild(style);
 	}
-	if (config.detail === "Not authenticated") {
+	if (config.detail === "Not authenticated" || config.auth_required) {
 		new Login({
 			target: target,
 			props: config
 		});
 	} else {
 		let url = new URL(window.location.toString());
-		if (config.theme !== null && config.theme.startsWith("dark")) {
+		if (config.theme && config.theme.startsWith("dark")) {
 			target.classList.add("dark");
 			config.dark = true;
 			if (config.theme === "dark") {
@@ -94,11 +97,19 @@ window.launchGradio = (config: Config, element_query: string) => {
 			config.dark = true;
 			target.classList.add("dark");
 		}
-		config.fn = fn.bind(null, config.root + "api/");
-		new App({
-			target: target,
-			props: config
-		});
+		let session_hash = Math.random().toString(36).substring(2);
+		config.fn = fn.bind(null, session_hash, config.root + "api/");
+		if (config.mode === "blocks") {
+			new Blocks({
+				target: target,
+				props: config
+			});
+		} else {
+			new App({
+				target: target,
+				props: config
+			});
+		}
 	}
 };
 

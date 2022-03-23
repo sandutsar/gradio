@@ -18,7 +18,7 @@
   <meta name="twitter:creator" content="@teamGradio">
   <meta name="twitter:title" content="Gradio Guides">
   <meta name="twitter:description" content="How to use Gradio">
-  <meta name="twitter:image" content="/assets/img/guides/guides-meta.png">
+  <meta name="twitter:image" content="https://gradio.app/assets/img/guides/guides-meta.png">
 
   <link rel="icon" type="image/png" href="/assets/img/logo.png">
   <link href="/gradio_static/static/bundle.css" rel="stylesheet">
@@ -129,12 +129,14 @@
           <h2 class="font-semibold group-hover:underline text-xl">{{ guide.pretty_name }}
           </h2>
           <div class="tags-holder">
+            {% if guide.tags is not none %}
             <p>
               {% for tag in guide.tags %}
                 {{ tag }}<!--
              -->{% if not loop.last %}, {% endif %}
               {% endfor %}
             </p>
+            {% endif %}
           </div>
         </div>
       </a>
@@ -220,7 +222,7 @@
       if (txtValue.toUpperCase().indexOf(filter) > -1 || guideContent.toUpperCase().indexOf(filter) > -1) {
         a[{{ loop.index - 1}}].style.display = "";
       } else {
-        a[{{ loop.index - 1 }}].style.display = "none";
+        a[{{ loop.index - 1}}].style.display = "none";
         counter++;
       }
     {% endfor %}
